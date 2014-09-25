@@ -1,0 +1,8 @@
+Manifest-Version: 1.0
+Built-By: uptime software
+Build-Jdk: 1.7.0_67-b01 
+Plugin-Class: com.uptimesoftware.uptime.plugin.MonitorWindowsServiceCheckAdvanced
+Plugin-Version: 1.0
+Plugin-Id: advanced-windows-service-check-monitor
+Plugin-Provider: Uptime Software
+
