@@ -182,5 +182,5 @@
 		</element>
 
 	</elements>
-	<help />
+	<help>Check the status of multiple windows services via a variety of filters</help>
 </uptime>
