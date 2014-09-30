@@ -6,7 +6,6 @@ import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Scanner;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -39,6 +38,8 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 
 	/**
 	 * A nested static class which has to extend PluginMonitor.
+	 * Private helper functions have too many parameters but it was needed to test client-side plugin Java code in unit
+	 * test. Manual testings just take too much time.
 	 * 
 	 * Functions that require implementation :
 	 * 1) The monitor function will implement the main functionality and should set the monitor's state and result
@@ -48,28 +49,28 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 	 */
 	@Extension
 	public static class UptimeMonitorWindowsServiceCheckAdvanced extends PluginMonitor {
+
 		// Simple Logging Facade for Java (SLF4J)
 		private static final Logger LOGGER = LoggerFactory.getLogger(UptimeMonitorWindowsServiceCheckAdvanced.class);
 
+		private static final String COMMA_DELIMITER = ",";
 		// On WMIC, caption=Display Name(Description), name=Service Name, startmode=Startup Type, state=Service Status.
 		private static final String DISPLAY_NAME = "Caption";
+		// SERVICE_NAME is selected but it's not used in output because WMIC client on Linux returns Name always.
 		private static final String SERVICE_NAME = "Name";
 		private static final String STARTUP_MODE = "StartMode";
 		private static final String STATE = "State";
-		private static final String WINDOWS_WMIC_SERVICE_GET = DISPLAY_NAME + "," + SERVICE_NAME + "," + STARTUP_MODE
-				+ "," + STATE;
-		// SERVICE_NAME is in output even though it is not needed and not selected in WQL. Just to make parsing process
-		// consistent, get SERVICE_NAME on both Windows and Linux and then parse it out. And no need to escape
-		// quotations on Linux even if the usage example uses quotations around WQL.
-		private static final String LINUX_WMIC_SERVICE_GET = "select " + DISPLAY_NAME + "," + SERVICE_NAME + ","
-				+ STARTUP_MODE + "," + STATE + " from Win32_Service";
-		private static final String SERVICE_NAME_SEPARATOR = ",";
+		private static final String WMIC_TOKENS = DISPLAY_NAME + COMMA_DELIMITER + SERVICE_NAME + COMMA_DELIMITER
+				+ STARTUP_MODE + COMMA_DELIMITER + STATE;
+
 		private static final int SERVICE_STARTUPTYPE_INDEX = 0;
 		private static final int SERVICE_STATUS_INDEX = 1;
 		// booleans to be used in various if-statement conditions.
 		private boolean isItLocalhost;
-		private boolean includeSelected;
-		private boolean excludeSelected;
+		private boolean startupTypeIncludeSelected;
+		private boolean startupTypeExcludeSelected;
+		private boolean serviceStatusIncludeSelected;
+		private boolean serviceStatusExcludeSelected;
 
 		// See definition in .xml file for plugin. Each plugin has different number of input/output parameters.
 		// [Input]
@@ -80,7 +81,8 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		String serviceDisplayName; // This String can be regex.
 		String startupTypeInclude;
 		String startupTypeExclude;
-		String serviceStatus;
+		String serviceStatusInclude;
+		String serviceStatusExclude;
 
 		/**
 		 * The setParameters function will accept a Parameters object containing the values filled into the monitor's
@@ -100,7 +102,21 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 			serviceDisplayName = params.getString("serviceDisplayName");
 			startupTypeInclude = params.getString("startupTypeInclude");
 			startupTypeExclude = params.getString("startupTypeExclude");
-			serviceStatus = params.getString("serviceStatus");
+			serviceStatusInclude = params.getString("serviceStatusInclude");
+			serviceStatusExclude = params.getString("serviceStatusExclude");
+
+			// Is it localhost?
+			isItLocalhost = hostname.equals("localhost");
+			// Check if startupType(s) are selected.
+			startupTypeIncludeSelected = startupTypeInclude != null;
+			startupTypeExcludeSelected = startupTypeExclude != null;
+			serviceStatusIncludeSelected = serviceStatusInclude != null;
+			serviceStatusExcludeSelected = serviceStatusExclude != null;
+			// If startup type is "Automatic", convert it to "Auto" because WMI only outputs "Auto".
+			startupTypeInclude = startupTypeIncludeSelected && startupTypeInclude != null
+					&& startupTypeInclude.equals("Automatic") ? "Auto" : startupTypeInclude;
+			startupTypeExclude = startupTypeExcludeSelected && startupTypeExclude != null
+					&& startupTypeExclude.equals("Automatic") ? "Auto" : startupTypeExclude;
 		}
 
 		/**
@@ -110,108 +126,31 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		@Override
 		public void monitor() {
 			LOGGER.debug("Error handling : Check either Admin name or password is missing");
-			isItLocalhost = hostname.equals("localhost");
-			if (!isItLocalhost && ((adminName != null && password == null) || (adminName == null && password != null))) {
-				// Not localhost but missing admin name or password.
-				setStateAndMessage(MonitorState.UNKNOWN, "Please enter both Administrator and Password.");
-				return;
-			} else if (isItLocalhost && (adminName != null || password != null || domainName != null)) {
-				// localhost but admin name or/and password are entered. localhost doesn't need them for wmic.
-				setStateAndMessage(MonitorState.UNKNOWN, "localhost does not need Domain, Administrator, and Password.");
+			if (!checkAdminOrPasswordMissing(isItLocalhost, adminName, password, domainName)) {
 				return;
 			}
 
-			LOGGER.debug("Error handling : A user cannot select both Startup Type (Include) and Startup Type (Exclude)");
-			includeSelected = startupTypeInclude != null;
-			excludeSelected = startupTypeExclude != null;
-			if (includeSelected && excludeSelected) {
-				setStateAndMessage(MonitorState.UNKNOWN,
-						"Please select one of Startup Type (Include) & Startup Type (Exclude)");
-				return;
-			}
-
-			LOGGER.debug("Replacing 'Automatic' with 'Auto' because WMIC returns 'Auto'");
-			startupTypeInclude = includeSelected && startupTypeInclude.equals("Automatic") ? "Auto"
-					: startupTypeInclude;
-			startupTypeExclude = excludeSelected && startupTypeExclude.equals("Automatic") ? "Auto"
-					: startupTypeExclude;
+			LOGGER.debug("Error handling : A user cannot select both Include and Exclude. And replacing 'Automatic' with 'Auto' because WMIC returns 'Auto'");
+			checkIncludeExclude(startupTypeIncludeSelected, startupTypeExcludeSelected, serviceStatusIncludeSelected,
+					serviceStatusExcludeSelected);
 
 			LOGGER.debug("Error handling : Check validity of regex syntax.");
 			HashSet<String> regexes = new HashSet<String>();
-			if (serviceDisplayName.contains(SERVICE_NAME_SEPARATOR)) {
-				// If Service Display Name input contains comma(s), separate them.
-				String[] temp = serviceDisplayName.split(SERVICE_NAME_SEPARATOR);
-				for (String regex : temp) {
-					if (!checkRegex(regex)) {
-						setStateAndMessage(MonitorState.UNKNOWN,
-								"One or more service display name(s) contains invalid regex syntax.");
-						return;
-					}
-					regexes.add(regex);
-				}
-			} else {
-				// No comma in Service Display Name. It should only contain one service display name/regex.
-				if (!checkRegex(serviceDisplayName)) {
-					setStateAndMessage(MonitorState.UNKNOWN, "The service display name has invalid regex syntax.");
-					return;
-				}
-				regexes.add(serviceDisplayName);
-			}
-
-			LOGGER.debug("Step 2 : Check OS type, execute WMIC.");
-			ArrayList<String> args = new ArrayList<String>();
-			boolean gotResult = false;
-			HashMap<String, String[]> result = new HashMap<String, String[]>();
-			if (SystemUtils.IS_OS_WINDOWS) {
-				LOGGER.debug("[Windows] Set a new admin name if domain is entered");
-				adminName = domainName != null ? domainName + "\\" + adminName : adminName;
-				// Windows WMIC : wmic /node:<hostname> /user:<username> /password:<password> service get name.
-				if (isItLocalhost) {
-					args.add("wmic");
-					args.add("/node:\"" + hostname + "\"");
-					args.add("service");
-					args.add("GET");
-					args.add(WINDOWS_WMIC_SERVICE_GET);
-				} else {
-					args.add("wmic");
-					args.add("/node:\"" + hostname + "\"");
-					args.add("/user:" + adminName);
-					args.add("/password:" + password);
-					args.add("Service");
-					args.add("GET");
-					args.add(WINDOWS_WMIC_SERVICE_GET);
-				}
-				gotResult = execWmicCommand(result, args, regexes);
-
-			} else if (SystemUtils.IS_OS_LINUX) {
-				LOGGER.debug("[Linux] Check if a plugin is trying to run against localhost and WMI Client is installed.");
-				if (isItLocalhost) {
-					setStateAndMessage(MonitorState.UNKNOWN, "The localhost is Linux OS, Choose remote Windows host.");
-					return;
-				} else if (!isWmicClientInstalled()) {
-					setStateAndMessage(MonitorState.UNKNOWN,
-							"WMIC Client is not installed on the Linux monitoring station.");
-					return;
-				}
-				LOGGER.debug("[Linux] Set a new admin name if domain is entered");
-				adminName = domainName != null ? domainName + "/" + adminName : adminName;
-				// Linux WMIC : wmic -U [domain/]<username>%<password> //<hostname> "select * from Win32_Service"
-				args.add("wmic");
-				args.add("-U");
-				args.add(adminName + "%" + password);
-				args.add("//" + hostname);
-				args.add(LINUX_WMIC_SERVICE_GET);
-				gotResult = execWmicCommand(result, args, regexes);
-
-			} else {
-				setStateAndMessage(MonitorState.UNKNOWN,
-						"Advanced Windows Service Check plug-in can only run on Windows / Linux monitoring station.");
+			if (!checkRegexAndAdd(regexes, serviceDisplayName)) {
 				return;
 			}
 
-			LOGGER.debug("Error handling : Stop monitor if getting result was unsuccessful");
-			if (!gotResult) {
-				setStateAndMessage(MonitorState.UNKNOWN, "Unable to get result from executing wmic command.");
+			LOGGER.debug("Step 2 : Check OS type and build args of ProcessBuilder.");
+			ArrayList<String> args = new ArrayList<String>();
+			if (!buildArgsOfProcessBuilder(args, isItLocalhost, hostname, adminName, password, domainName)) {
+				return;
+			}
+
+			LOGGER.debug("Step 3 : Execute WMIC command");
+			HashMap<String, String[]> result = new HashMap<String, String[]>();
+			if (!execWmicCommand(result, args, regexes, startupTypeIncludeSelected, startupTypeExcludeSelected,
+					serviceStatusIncludeSelected, serviceStatusExcludeSelected, startupTypeInclude, startupTypeExclude,
+					serviceStatusInclude, serviceStatusExclude)) {
 				return;
 			}
 
@@ -227,6 +166,133 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 
 			LOGGER.debug("Monitor ran successfully. Set monitor state to OK.");
 			setStateAndMessage(MonitorState.OK, "Monitor ran successfully.");
+		}
+
+		/**
+		 * Check if both Include and Exclude are selected. If so, error.
+		 * 
+		 * @param startupInc
+		 *            boolean to show startup type (include) is selected or not.
+		 * @param startupExc
+		 *            boolean to show startup type (exclude) is selected or not.
+		 * @param serviceInc
+		 *            boolean to show service status (include) is selected or not.
+		 * @param serviceExc
+		 *            boolean to show service status (exclude) is selected or not.
+		 * @return True both Include & Exclude are not selected, false otherwise.
+		 */
+		private boolean checkIncludeExclude(boolean startupInc, boolean startupExc, boolean serviceInc,
+				boolean serviceExc) {
+			if (startupInc && startupExc) {
+				setStateAndMessage(MonitorState.UNKNOWN,
+						"Please select only one of Startup Type (Include) & (Exclude) or select neither.");
+				return false;
+			}
+
+			if (serviceInc && serviceExc) {
+				setStateAndMessage(MonitorState.UNKNOWN,
+						"Please select only one of Service Status (Include) & (Exclude) or select neither.");
+				return false;
+			}
+			return true;
+		}
+
+		/**
+		 * Check if Admin name and/or Password is missing.
+		 * 
+		 * @param isItLocalhost
+		 *            True if localhost, false otherwise.
+		 * @param password
+		 *            password input from Up.time
+		 * @param adminName
+		 *            adminName input from Up.time
+		 * @param domainName
+		 *            domainName input from Up.time
+		 * @return True if admin/password is not missing when non-localhost, false otherwise. True if
+		 *         admin&password&domain are missing when localhost, false otherwise.
+		 */
+		private boolean checkAdminOrPasswordMissing(boolean isItLocalhost, String password, String adminName,
+				String domainName) {
+			if (!isItLocalhost && (password == null || adminName == null)) {
+				// Not localhost but missing admin name or password.
+				setStateAndMessage(MonitorState.UNKNOWN, "Please enter both Administrator and Password.");
+				return false;
+			} else if (isItLocalhost && (adminName != null || password != null || domainName != null)) {
+				// localhost but admin name or/and password are entered. localhost doesn't need them for wmic.
+				setStateAndMessage(MonitorState.UNKNOWN, "localhost does not need Domain, Administrator, and Password.");
+				return false;
+			}
+			return true;
+		}
+
+		/**
+		 * Build ProcessBuilder arguments for Windows / Linux.
+		 * 
+		 * @param args
+		 *            Arguments of ProcessBuilder for running WMIC command.
+		 * @param isItLocalhost
+		 *            True if localhost, false otherwise.
+		 * @param hostname
+		 *            Hostname input from Up.time
+		 * @param adminName
+		 *            adminName input from Up.time
+		 * @param password
+		 *            password input from Up.time
+		 * @param domainName
+		 *            domainName input from up.time
+		 * @return True if arguments building is successful, false otherwise.
+		 */
+		private boolean buildArgsOfProcessBuilder(ArrayList<String> args, boolean isItLocalhost, String hostname,
+				String adminName, String password, String domainName) {
+			if (SystemUtils.IS_OS_WINDOWS) {
+				LOGGER.debug("[Windows] Set a new admin name if domain is entered");
+				adminName = domainName != null ? domainName + "\\" + adminName : adminName;
+				// Windows WMIC : wmic /node:<hostname> /user:<username> /password:<password> Service GET
+				// Caption,Name,StartMode,State.
+				if (isItLocalhost) {
+					args.add("wmic");
+					args.add("/node:\"" + hostname + "\"");
+					args.add("Service");
+					args.add("GET");
+					args.add(WMIC_TOKENS);
+					args.add("/format:csv");
+				} else {
+					args.add("wmic");
+					args.add("/node:\"" + hostname + "\"");
+					args.add("/user:" + adminName);
+					args.add("/password:" + password);
+					args.add("Service");
+					args.add("GET");
+					args.add(WMIC_TOKENS);
+					args.add("/format:csv");
+				}
+			} else if (SystemUtils.IS_OS_LINUX) {
+				LOGGER.debug("[Linux] Check if a plugin is trying to run against localhost and WMI Client is installed.");
+				if (isItLocalhost) {
+					setStateAndMessage(MonitorState.UNKNOWN, "The localhost is Linux OS, Choose remote Windows host.");
+					return false;
+				} else if (!isWmicClientInstalled()) {
+					setStateAndMessage(MonitorState.UNKNOWN,
+							"WMIC Client is not installed on the Linux monitoring station.");
+					return false;
+				}
+				LOGGER.debug("[Linux] Set a new admin name if domain is entered");
+				adminName = domainName != null ? domainName + "/" + adminName : adminName;
+				// Linux WMIC : wmic -U [domain/]<username>%<password> //<hostname>
+				// "select * from Win32_Service --delimiter=,"
+				args.add("wmic");
+				args.add("-U");
+				args.add(adminName + "%" + password);
+				args.add("//" + hostname);
+				// No need to escape quotes even though the usage description WMIC client uses it around WQL.
+				args.add("select " + WMIC_TOKENS + " from Win32_Service");
+				args.add("--delimiter=" + COMMA_DELIMITER);
+			} else {
+				setStateAndMessage(MonitorState.UNKNOWN,
+						"Advanced Windows Service Check plug-in can only run on Windows / Linux monitoring station.");
+				return false;
+			}
+			return true;
 		}
 
 		/**
@@ -256,14 +322,35 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		}
 
 		/**
-		 * Private helper method to execute WMIC command.
+		 * Helper to execute wmic command.
 		 * 
+		 * @param result
+		 *            HashMap that will store result of executing wmic command.
 		 * @param wmicCommand
-		 *            ArrayList<String> which contains args of WMIC command to be executed on a remote Windows host.
-		 * @return A result String that contains a (filtered) list of Windows services.
+		 *            Command to execute.
+		 * @param regexes
+		 *            A list of regexes.
+		 * @param startupInc
+		 *            True if Startup Type (Include) is selected.
+		 * @param startupExc
+		 *            True if Startup Type (Exclude) is selected.
+		 * @param serviceInc
+		 *            True if Service Status (Include) is selected.
+		 * @param serviceExc
+		 *            True if Service Status (Exclude) is selected.
+		 * @param typeInc
+		 *            Startup Type (Include) input from Up.time.
+		 * @param typeExc
+		 *            Startup Type (Exclude) input from Up.time.
+		 * @param statusInc
+		 *            Service Status (Include) input from Up.time.
+		 * @param statusExc
+		 *            Service Status (Exclude) input from Up.time.
+		 * @return True if executing wmic command is successful, false otherwise.
 		 */
 		private boolean execWmicCommand(HashMap<String, String[]> result, ArrayList<String> wmicCommand,
-				HashSet<String> regexes) {
+				HashSet<String> regexes, boolean startupInc, boolean startupExc, boolean serviceInc,
+				boolean serviceExc, String typeInc, String typeExc, String statusInc, String statusExc) {
 			boolean gotResult = false;
 			try {
 				LOGGER.debug("Make a Process to execute wmic command.");
@@ -273,113 +360,197 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 				BufferedReader bufferedReader = new BufferedReader(new InputStreamReader(process.getInputStream()));
 
 				// TODO : (Find a way to get rid of the errors) On Linux, first few lines of output contain weird error
-				// messages, find a line that contains the column names and then start parsing.
+				// messages, find a line that contains the column names (aka WMIC_TOKENS) and then start parsing.
 				LOGGER.debug("Read line(s) and put them in the HashMap.");
 				boolean columnNamesFound = false;
 				String line = "";
 				while ((line = bufferedReader.readLine()) != null) {
-					// Check if the line contains column names. If yes, then start parsing.
 					if (!columnNamesFound) {
-						columnNamesFound = line.contains(DISPLAY_NAME) && line.contains(SERVICE_NAME)
-								&& line.contains(STARTUP_MODE) && line.contains(STATE);
+						columnNamesFound = line.contains(WMIC_TOKENS);
+						continue;
 					}
 					if (!line.trim().equals("") && columnNamesFound) {
-						gotResult = splitLineAndPutInHashMap(result, line, regexes);
+						// On Linux, WMIC_TOKENS re-appears multiple times, splitLineAndPutInHashMap() will handle the
+						// duplication.
+						gotResult = splitLineAndPutInHashMap(result, line, regexes, startupInc, startupExc, serviceInc,
+								serviceExc, typeInc, typeExc, statusInc, statusExc);
+						if (!gotResult) {
+							// Splitting the given line was unsuccessful. Break out of while loop and destroy process.
+							break;
+						}
 					}
 				}
 				process.waitFor();
 				process.destroy();
-
 			} catch (IOException | InterruptedException e) {
 				LOGGER.error("Error occurred while executing wmic command.", e);
-				return gotResult;
+				gotResult = false;
 			}
 			return gotResult;
 		}
 
 		/**
-		 * Private helper method to split a line by two- or more-spaces delimiter on Windows or split a line by "|"
-		 * delimiter on Linux. And put the split data into a HashMap.
+		 * Private helper method to split a line by comma delimiter on Windows and Linux. And put the split data into
+		 * the given HashMap.
 		 * 
 		 * @param result
-		 *            HashMap that will store Service name as a key and String array, which has Startup type and Status
-		 *            elements, as value.
-		 * @param line
-		 *            The String line that contains Service name, Startup type, Status.
+		 *            HashMap that will store result of executing wmic command.
+		 * @param wmicCommand
+		 *            Command to execute.
 		 * @param regexes
-		 *            Service names or regexes from Service Display Name input field.
-		 * @return True if splitting the input worked, false otherwise.
+		 *            A list of regexes.
+		 * @param startupInc
+		 *            True if Startup Type (Include) is selected.
+		 * @param startupExc
+		 *            True if Startup Type (Exclude) is selected.
+		 * @param serviceInc
+		 *            True if Service Status (Include) is selected.
+		 * @param serviceExc
+		 *            True if Service Status (Exclude) is selected.
+		 * @param typeInc
+		 *            Startup Type (Include) input from Up.time.
+		 * @param typeExc
+		 *            Startup Type (Exclude) input from Up.time.
+		 * @param statusInc
+		 *            Service Status (Include) input from Up.time.
+		 * @param statusExc
+		 *            Service Status (Exclude) input from Up.time.
+		 * @return True if successful, false otherwise.
 		 */
-		private boolean splitLineAndPutInHashMap(HashMap<String, String[]> result, String line, HashSet<String> regexes) {
-			boolean splitOkay = false;
-			String serviceDisplayName, serviceShortName, startupType, status;
+		private boolean splitLineAndPutInHashMap(HashMap<String, String[]> result, String line,
+				HashSet<String> regexes, boolean startupInc, boolean startupExc, boolean serviceInc,
+				boolean serviceExc, String typeInc, String typeExc, String statusInc, String statusExc) {
 
-			// Split the input line by a two- or more-space delimiter.
-			try (@SuppressWarnings("resource")
-			// If Windows use two- or more-space characters as a delimiter, or "|" as a delimiter.
-			Scanner scanner = SystemUtils.IS_OS_WINDOWS ? new Scanner(line).useDelimiter("\\s{2,}") : new Scanner(line)
-					.useDelimiter("\\|");) {
-				serviceDisplayName = scanner.hasNext() ? scanner.next() : "";
-				serviceShortName = scanner.hasNext() ? scanner.next() : "";
-				startupType = scanner.hasNext() ? scanner.next() : "";
-				status = scanner.hasNext() ? scanner.next() : "";
-				scanner.close();
+			// Special case : On Linux, output returned from WMIC client often contains unwanted lines such as
+			// "CLASS: Win32_Service" and "Caption,Name,StartMode,State" and "CLASS: Win32_TerminalService" in the list
+			// of Windows services, and the unwanted lines appear multiple times in the list. Ignore them.
+			if (line.contains("CLASS: Win32_Service") || line.contains(WMIC_TOKENS)
+					|| line.contains("CLASS: Win32_TerminalService")) {
+				// Ignore these lines and continue parsing.
+				return true;
+			}
+
+			String serviceDisplayName = "", serviceShortName = "", startupType = "", status = "";
+
+			String[] tokens = line.split(COMMA_DELIMITER);
+			int arrayLength = tokens.length;
+			// On Windows, we expect to have Node,Caption,Name,StartMode,State. (5 columns / tokens)
+			// On Linux, we expect to have Caption,Name,StartMode,State. (4 columns / tokens)
+			int expectedNumOfTokens = SystemUtils.IS_OS_WINDOWS ? 5 : 4;
+			// If more than expectedNumOfTokens (5 on Windows, 4 on Linux) tokens in the array, the Caption( aka Service
+			// Display Name) contains ','
+			if (arrayLength > expectedNumOfTokens) {
+				// On Windows, iteration starts at index 1 because tokens[0] aka Node is not needed.
+				for (int i = (expectedNumOfTokens - 4); i < arrayLength - 3; i++) {
+					// If i is not arrayLength - 4, concatenate strings with comma. Otherwise just add a string.
+					// For example, "Service" + " Display" = "Service, Display" (original string contains comma).
+					serviceDisplayName += i != arrayLength - 4 ? tokens[i] + COMMA_DELIMITER : tokens[i];
+				}
+				// last three items will always be Service Name, Startup Type, and Service Status.
+				serviceShortName = tokens[arrayLength - 3];
+				startupType = tokens[arrayLength - 2];
+				status = tokens[arrayLength - 1];
+			} else if (arrayLength < expectedNumOfTokens) {
+				setStateAndMessage(MonitorState.UNKNOWN, "WMIC output contains a line with incorrect format.");
+				return false;
+			} else {
+				// On Windows, we ignore tokens[0] aka Node because not needed
+				serviceDisplayName = tokens[arrayLength - 4];
+				serviceShortName = tokens[arrayLength - 3];
+				startupType = tokens[arrayLength - 2];
+				status = tokens[arrayLength - 1];
 			}
 
 			if (serviceDisplayName.equals("") || serviceShortName.equals("") || startupType.equals("")
 					|| status.equals("")) {
 				// serviceShortName is not used in this plugin, but just making sure splitting the input went well.
-				LOGGER.error("Check which one of serviceName, startupType, and/or status is empty.");
-				return splitOkay;
+				// serviceShortName may be useful later.
+				LOGGER.error("Check which one of serviceDisplayName, serviceShortName, startupType, and/or status is empty.");
+				return false;
 			}
 
-			// TODO check this part of code. serviceShortName is added so make sure.
 			boolean hasMatch = false;
 			for (String regex : regexes) {
 				// Filter the list of services with service name / regex. and filter again with startup type.
 				hasMatch = serviceDisplayName.matches(regex);
-				if (hasMatch && includeSelected && !excludeSelected && startupType.contains(startupTypeInclude)) {
+				if (hasMatch && startupInc && startupType.contains(typeInc)) {
 					// (Include) is selected, and the line contains selected startup type.
 					result.put(serviceDisplayName, new String[] { startupType, status });
-				} else if (hasMatch && !includeSelected && excludeSelected && !startupType.contains(startupTypeExclude)) {
+				} else if (hasMatch && startupExc && !startupType.contains(typeExc)) {
 					// (Exclude) is selected, and the line does not contain the selected Startup type.
 					result.put(serviceDisplayName, new String[] { startupType, status });
-				} else if (hasMatch && !includeSelected && !excludeSelected) {
+				} else if (hasMatch && !startupInc && !startupExc) {
 					// If neither Startup Type (Include) / (Exclude) is selected, no need to filter.
 					result.put(serviceDisplayName, new String[] { startupType, status });
 				}
 			}
 
-			if (serviceStatus == null) {
-				// If service status is not selected, no more filtering is needed.
-				return splitOkay = true;
+			if (!serviceInc && !serviceExc) {
+				// If service status (Include) or (Exclude) is not selected, no more filtering is needed.
+				return true;
 			}
 
-			// Last filtering with service status.
-			if (result.containsKey(serviceDisplayName)
-					&& !result.get(serviceDisplayName)[SERVICE_STATUS_INDEX].contains(serviceStatus)) {
+			// Last filtering with service status(Include) or (Exclude).
+			boolean serviceAddedFromAbove = result.containsKey(serviceDisplayName);
+			String servStatusOfKey = serviceAddedFromAbove ? result.get(serviceDisplayName)[SERVICE_STATUS_INDEX] : "";
+			if (serviceInc && serviceAddedFromAbove && !servStatusOfKey.contains(statusInc)) {
+				result.remove(serviceDisplayName);
+			} else if (serviceExc && serviceAddedFromAbove && servStatusOfKey.contains(statusExc)) {
 				result.remove(serviceDisplayName);
 			}
 
-			return splitOkay = true;
+			return true;
 		}
 
 		/**
-		 * Private helper method to check validity of the given regex.
+		 * Check regex syntax and add it to the given HashSet<String>
+		 * 
+		 * @param regexes
+		 *            A list of regexes.
+		 * @param serviceDisplayName
+		 *            Service Display Name input from Up.time.
+		 * @return True if the given regexes are valid and added to the HashSet, false otherwise.
+		 */
+		private boolean checkRegexAndAdd(HashSet<String> regexes, String serviceDisplayName) {
+			if (serviceDisplayName.contains(COMMA_DELIMITER)) {
+				// If Service Display Name input contains comma(s), separate them.
+				String[] temp = serviceDisplayName.split(COMMA_DELIMITER);
+				for (String regex : temp) {
+					if (!checkRegex(regex)) {
+						setStateAndMessage(MonitorState.UNKNOWN,
+								"One or more service display name(s) contains invalid regex syntax.");
+						return false;
+					} else {
+						regexes.add(regex);
+					}
+				}
+			} else {
+				// No comma in Service Display Name. It should only contain one service display name/regex.
+				if (!checkRegex(serviceDisplayName)) {
+					setStateAndMessage(MonitorState.UNKNOWN, "The service display name has invalid regex syntax.");
+					return false;
+				} else {
+					regexes.add(serviceDisplayName);
+				}
+			}
+			return true;
+		}
+
+		/**
+		 * Private helper method to check syntax of the given regex.
 		 * 
 		 * @param regex
 		 *            Regex string to be used.
 		 * @return True if the given regex is valid, false otherwise.
 		 */
 		private boolean checkRegex(String regex) {
-			boolean regexValid = false;
 			try {
 				Pattern.compile(regex);
-				regexValid = true;
 			} catch (PatternSyntaxException e) {
 				LOGGER.error("Invalid regex syntax.");
+				return false;
 			}
-			return regexValid;
+			return true;
 		}
 
 	}

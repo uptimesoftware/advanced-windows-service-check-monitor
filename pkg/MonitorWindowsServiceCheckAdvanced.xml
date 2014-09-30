@@ -83,7 +83,7 @@
 				<single_select type="dropdown">
 					<value>Automatic</value>
 					<value>Manual</value>
-					<value>Startup</value>
+					<value>Disabled</value>
 				</single_select>
 			</gui_type>
 		</element>
@@ -100,16 +100,36 @@
 				<single_select type="dropdown">
 					<value>Automatic</value>
 					<value>Manual</value>
-					<value>Startup</value>
+					<value>Disabled</value>
 				</single_select>
 			</gui_type>
 		</element>
 
-		<element name="serviceStatus" parameter_type="input" data_type="string" gui_basic="1" range_type="0">
+		<element name="serviceStatusInclude" parameter_type="input" data_type="string" gui_basic="1" range_type="0">
 			<control_options> size:40 </control_options>
 			<default_value />
-			<short_description> Service Status </short_description>
-			<long_description> Status of the service </long_description>
+			<short_description> Service Status (Include) </short_description>
+			<long_description> Service Status to include </long_description>
+			<validation_rule />
+			<error_message />
+			<gui_type>
+				<single_select type="dropdown">
+					<value>Stopped</value>
+					<value>Start Pending</value>
+					<value>Stop Pending</value>
+					<value>Running</value>
+					<value>Continue Pending</value>
+					<value>Pause Pending</value>
+					<value>Paused</value>
+				</single_select>
+			</gui_type>
+		</element>
+
+		<element name="serviceStatusExclude" parameter_type="input" data_type="string" gui_basic="1" range_type="0">
+			<control_options> size:40 </control_options>
+			<default_value />
+			<short_description> Service Status (Exclude) </short_description>
+			<long_description> Service Status to exclude </long_description>
 			<validation_rule />
 			<error_message />
 			<gui_type>
