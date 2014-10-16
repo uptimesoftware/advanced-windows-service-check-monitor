@@ -5,7 +5,7 @@
 
 	<class>Advanced Windows Service Check</class>
 	<exec>JAVA_PLUGIN:UptimeMonitorWindowsServiceCheckAdvanced</exec>
-	<erdc_version>1.0</erdc_version>
+	<erdc_version>1.1</erdc_version>
 	<category>Operating System Monitors</category>
 	<category_related></category_related>
 	<grid_info>
@@ -28,11 +28,11 @@
 			</gui_type>
 		</element>
 
-		<element name="adminName" parameter_type="input" data_type="string" gui_basic="1" range_type="0" units="">
+		<element name="userName" parameter_type="input" data_type="string" gui_basic="1" range_type="0" units="">
 			<control_options>size:10</control_options>
 			<default_value></default_value>
-			<short_description>Administrator</short_description>
-			<long_description>Admin name of remote host</long_description>
+			<short_description>Username</short_description>
+			<long_description>Username of remote host</long_description>
 			<validation_rule />
 			<error_message />
 			<gui_type>

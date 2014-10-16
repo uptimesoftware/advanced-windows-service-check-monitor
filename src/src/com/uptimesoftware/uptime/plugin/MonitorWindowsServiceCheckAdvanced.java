@@ -53,6 +53,21 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		// Simple Logging Facade for Java (SLF4J)
 		private static final Logger LOGGER = LoggerFactory.getLogger(UptimeMonitorWindowsServiceCheckAdvanced.class);
 
+		private static final String HOSTNAME = "hostname";
+		private static final String USERNAME = "userName";
+		private static final String DOMAIN_NAME = "domainName";
+		private static final String PASSWORD = "password";
+		private static final String SERVICE_DISPLAY_NAME = "serviceDisplayName";
+		private static final String STARTUP_TYPE_INCLUDE = "startupTypeInclude";
+		private static final String STARTUP_TYPE_EXCLUDE = "startupTypeExclude";
+		private static final String SERVICE_STATUS_INCLUDE = "serviceStatusInclude";
+		private static final String SERVICE_STATUS_EXCLUDE = "serviceStatusExclude";
+		private static final String MATCHED_SERVICES = "matchedServices";
+		private static final String NUMBER_OF_MATCHES = "numberOfMatches";
+
+		private static final String AUTOMATIC = "Automatic";
+		private static final String AUTO = "Auto";
+
 		private static final String COMMA_DELIMITER = ",";
 		// On WMIC, caption=Display Name(Description), name=Service Name, startmode=Startup Type, state=Service Status.
 		private static final String DISPLAY_NAME = "Caption";
@@ -65,18 +80,15 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 
 		private static final int SERVICE_STARTUPTYPE_INDEX = 0;
 		private static final int SERVICE_STATUS_INDEX = 1;
-		// booleans to be used in various if-statement conditions.
-		private boolean isItLocalhost;
-		private boolean startupTypeIncludeSelected;
-		private boolean startupTypeExcludeSelected;
-		private boolean serviceStatusIncludeSelected;
-		private boolean serviceStatusExcludeSelected;
+
+		// WSCPluginParams object will store all input params from Up.time
+		private WSCPluginParams wscParams;
 
 		// See definition in .xml file for plugin. Each plugin has different number of input/output parameters.
 		// [Input]
-		String hostname;
+		String hostName;
 		String domainName;
-		String adminName;
+		String userName;
 		String password;
 		String serviceDisplayName; // This String can be regex.
 		String startupTypeInclude;
@@ -95,28 +107,27 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		public void setParameters(Parameters params) {
 			LOGGER.debug("Step 1 : Setting parameters.");
 			// [Input]
-			hostname = params.getString("hostname");
-			domainName = params.getString("domainName");
-			adminName = params.getString("adminName");
-			password = params.getString("password");
-			serviceDisplayName = params.getString("serviceDisplayName");
-			startupTypeInclude = params.getString("startupTypeInclude");
-			startupTypeExclude = params.getString("startupTypeExclude");
-			serviceStatusInclude = params.getString("serviceStatusInclude");
-			serviceStatusExclude = params.getString("serviceStatusExclude");
+			hostName = params.getString(HOSTNAME);
+			domainName = params.getString(DOMAIN_NAME);
+			userName = params.getString(USERNAME);
+			password = params.getString(PASSWORD);
+			serviceDisplayName = params.getString(SERVICE_DISPLAY_NAME);
+			startupTypeInclude = params.getString(STARTUP_TYPE_INCLUDE);
+			startupTypeExclude = params.getString(STARTUP_TYPE_EXCLUDE);
+			serviceStatusInclude = params.getString(SERVICE_STATUS_INCLUDE);
+			serviceStatusExclude = params.getString(SERVICE_STATUS_EXCLUDE);
 
-			// Is it localhost?
-			isItLocalhost = hostname.equals("localhost");
-			// Check if startupType(s) are selected.
-			startupTypeIncludeSelected = startupTypeInclude != null;
-			startupTypeExcludeSelected = startupTypeExclude != null;
-			serviceStatusIncludeSelected = serviceStatusInclude != null;
-			serviceStatusExcludeSelected = serviceStatusExclude != null;
+			wscParams = new WSCPluginParams(hostName, domainName, userName, password, serviceDisplayName,
+					startupTypeInclude, startupTypeExclude, serviceStatusInclude, serviceStatusExclude);
+
 			// If startup type is "Automatic", convert it to "Auto" because WMI only outputs "Auto".
-			startupTypeInclude = startupTypeIncludeSelected && startupTypeInclude != null
-					&& startupTypeInclude.equals("Automatic") ? "Auto" : startupTypeInclude;
-			startupTypeExclude = startupTypeExcludeSelected && startupTypeExclude != null
-					&& startupTypeExclude.equals("Automatic") ? "Auto" : startupTypeExclude;
+			if (wscParams.isStartupTypeIncluded() && wscParams.getStartupTypeInclude() != null
+					&& wscParams.getStartupTypeInclude().equals(AUTOMATIC)) {
+				wscParams.setStartupTypeInclude(AUTO);
+			} else if (wscParams.isStartupTypeExcluded() && wscParams.getStartupTypeExclude() != null
+					&& wscParams.getStartupTypeExclude().equals(AUTOMATIC)) {
+				wscParams.setStartupTypeExclude(AUTO);
+			}
 		}
 
 		/**
@@ -126,31 +137,30 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		@Override
 		public void monitor() {
 			LOGGER.debug("Error handling : Check either Admin name or password is missing");
-			if (!checkAdminOrPasswordMissing(isItLocalhost, adminName, password, domainName)) {
+			if (!checkAdminOrPasswordMissing(wscParams)) {
 				return;
 			}
 
-			LOGGER.debug("Error handling : A user cannot select both Include and Exclude. And replacing 'Automatic' with 'Auto' because WMIC returns 'Auto'");
-			checkIncludeExclude(startupTypeIncludeSelected, startupTypeExcludeSelected, serviceStatusIncludeSelected,
-					serviceStatusExcludeSelected);
+			LOGGER.debug("Error handling : A user cannot select both Include and Exclude in a same category.");
+			if (!checkIncludeExclude(wscParams)) {
+				return;
+			}
 
 			LOGGER.debug("Error handling : Check validity of regex syntax.");
 			HashSet<String> regexes = new HashSet<String>();
-			if (!checkRegexAndAdd(regexes, serviceDisplayName)) {
+			if (!checkRegexAndAdd(regexes, wscParams)) {
 				return;
 			}
 
 			LOGGER.debug("Step 2 : Check OS type and build args of ProcessBuilder.");
 			ArrayList<String> args = new ArrayList<String>();
-			if (!buildArgsOfProcessBuilder(args, isItLocalhost, hostname, adminName, password, domainName)) {
+			if (!buildArgsOfProcessBuilder(args, wscParams)) {
 				return;
 			}
 
 			LOGGER.debug("Step 3 : Execute WMIC command");
 			HashMap<String, String[]> result = new HashMap<String, String[]>();
-			if (!execWmicCommand(result, args, regexes, startupTypeIncludeSelected, startupTypeExcludeSelected,
-					serviceStatusIncludeSelected, serviceStatusExcludeSelected, startupTypeInclude, startupTypeExclude,
-					serviceStatusInclude, serviceStatusExclude)) {
+			if (!execWmicCommand(result, args, regexes, wscParams)) {
 				return;
 			}
 
@@ -161,8 +171,8 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 				theList.append(key + " / Startup Type : " + result.get(key)[SERVICE_STARTUPTYPE_INDEX] + " / Status : "
 						+ result.get(key)[SERVICE_STATUS_INDEX]);
 			}
-			addVariable("matchedServices", theList.toString().trim());
-			addVariable("numberOfMatches", result.size());
+			addVariable(MATCHED_SERVICES, theList.toString().trim());
+			addVariable(NUMBER_OF_MATCHES, result.size());
 
 			LOGGER.debug("Monitor ran successfully. Set monitor state to OK.");
 			setStateAndMessage(MonitorState.OK, "Monitor ran successfully.");
@@ -171,25 +181,18 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		/**
 		 * Check if both Include and Exclude are selected. If so, error.
 		 * 
-		 * @param startupInc
-		 *            boolean to show startup type (include) is selected or not.
-		 * @param startupExc
-		 *            boolean to show startup type (exclude) is selected or not.
-		 * @param serviceInc
-		 *            boolean to show service status (include) is selected or not.
-		 * @param serviceExc
-		 *            boolean to show service status (exclude) is selected or not.
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
 		 * @return True both Include & Exclude are not selected, false otherwise.
 		 */
-		private boolean checkIncludeExclude(boolean startupInc, boolean startupExc, boolean serviceInc,
-				boolean serviceExc) {
-			if (startupInc && startupExc) {
+		private boolean checkIncludeExclude(WSCPluginParams wscParams) {
+			if (wscParams.isStartupTypeIncluded() && wscParams.isStartupTypeExcluded()) {
 				setStateAndMessage(MonitorState.UNKNOWN,
 						"Please select only one of Startup Type (Include) & (Exclude) or select neither.");
 				return false;
 			}
 
-			if (serviceInc && serviceExc) {
+			if (wscParams.isServiceStatusIncluded() && wscParams.isServiceStatusExcluded()) {
 				setStateAndMessage(MonitorState.UNKNOWN,
 						"Please select only one of Service Status (Include) & (Exclude) or select neither.");
 				return false;
@@ -198,26 +201,31 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		}
 
 		/**
-		 * Check if Admin name and/or Password is missing.
+		 * Check if Username/Password/Domain is/are missing.
 		 * 
-		 * @param isItLocalhost
-		 *            True if localhost, false otherwise.
-		 * @param password
-		 *            password input from Up.time
-		 * @param adminName
-		 *            adminName input from Up.time
-		 * @param domainName
-		 *            domainName input from Up.time
-		 * @return True if admin/password is not missing when non-localhost, false otherwise. True if
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
+		 * @return True if username/password/domain is not missing when non-localhost, false otherwise. True if
 		 *         admin&password&domain are missing when localhost, false otherwise.
 		 */
-		private boolean checkAdminOrPasswordMissing(boolean isItLocalhost, String password, String adminName,
-				String domainName) {
-			if (!isItLocalhost && (password == null || adminName == null)) {
-				// Not localhost but missing admin name or password.
-				setStateAndMessage(MonitorState.UNKNOWN, "Please enter both Administrator and Password.");
-				return false;
-			} else if (isItLocalhost && (adminName != null || password != null || domainName != null)) {
+		private boolean checkAdminOrPasswordMissing(WSCPluginParams wscParams) {
+
+			String password = wscParams.getPassword();
+			String userName = wscParams.getUserName();
+			String domainName = wscParams.getDomainName();
+
+			if (!wscParams.isItLocalhost()) {
+				if (password == null || password.equals("")) {
+					setStateAndMessage(MonitorState.UNKNOWN, "Please enter Password.");
+					return false;
+				} else if (userName == null || userName.equals("")) {
+					setStateAndMessage(MonitorState.UNKNOWN, "Please enter Username.");
+					return false;
+				} else if (domainName == null || domainName.equals("")) {
+					setStateAndMessage(MonitorState.UNKNOWN, "Please enter Domain.");
+					return false;
+				}
+			} else if (wscParams.isItLocalhost() && (userName != null || password != null || domainName != null)) {
 				// localhost but admin name or/and password are entered. localhost doesn't need them for wmic.
 				setStateAndMessage(MonitorState.UNKNOWN, "localhost does not need Domain, Administrator, and Password.");
 				return false;
@@ -228,38 +236,34 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		/**
 		 * Build ProcessBuilder arguments for Windows / Linux.
 		 * 
-		 * @param args
-		 *            Arguments of ProcessBuilder for running WMIC command.
-		 * @param isItLocalhost
-		 *            True if localhost, false otherwise.
-		 * @param hostname
-		 *            Hostname input from Up.time
-		 * @param adminName
-		 *            adminName input from Up.time
-		 * @param password
-		 *            password input from Up.time
-		 * @param domainName
-		 *            domainName input from up.time
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
 		 * @return True if arguments building is successful, false otherwise.
 		 */
-		private boolean buildArgsOfProcessBuilder(ArrayList<String> args, boolean isItLocalhost, String hostname,
-				String adminName, String password, String domainName) {
+		private boolean buildArgsOfProcessBuilder(ArrayList<String> args, WSCPluginParams wscParams) {
+
+			String hostName = wscParams.getHostName();
+			String domainName = wscParams.getDomainName();
+			String userName = wscParams.getUserName();
+			String password = wscParams.getPassword();
+			boolean isItLocalhost = wscParams.isItLocalhost();
+
 			if (SystemUtils.IS_OS_WINDOWS) {
 				LOGGER.debug("[Windows] Set a new admin name if domain is entered");
-				adminName = domainName != null ? domainName + "\\" + adminName : adminName;
+				userName = domainName != null ? domainName + "\\" + userName : userName;
 				// Windows WMIC : wmic /node:<hostname> /user:<username> /password:<password> Service GET
 				// Caption,Name,StartMode,State.
 				if (isItLocalhost) {
 					args.add("wmic");
-					args.add("/node:\"" + hostname + "\"");
+					args.add("/node:\"" + hostName + "\"");
 					args.add("Service");
 					args.add("GET");
 					args.add(WMIC_TOKENS);
 					args.add("/format:csv");
 				} else {
 					args.add("wmic");
-					args.add("/node:\"" + hostname + "\"");
-					args.add("/user:" + adminName);
+					args.add("/node:\"" + hostName + "\"");
+					args.add("/user:" + userName);
 					args.add("/password:" + password);
 					args.add("Service");
 					args.add("GET");
@@ -277,13 +281,13 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 					return false;
 				}
 				LOGGER.debug("[Linux] Set a new admin name if domain is entered");
-				adminName = domainName != null ? domainName + "/" + adminName : adminName;
+				userName = domainName != null ? domainName + "/" + userName : userName;
 				// Linux WMIC : wmic -U [domain/]<username>%<password> //<hostname>
 				// "select * from Win32_Service --delimiter=,"
 				args.add("wmic");
 				args.add("-U");
-				args.add(adminName + "%" + password);
-				args.add("//" + hostname);
+				args.add(userName + "%" + password);
+				args.add("//" + hostName);
 				// No need to escape quotes even though the usage description WMIC client uses it around WQL.
 				args.add("select " + WMIC_TOKENS + " from Win32_Service");
 				args.add("--delimiter=" + COMMA_DELIMITER);
@@ -330,27 +334,12 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		 *            Command to execute.
 		 * @param regexes
 		 *            A list of regexes.
-		 * @param startupInc
-		 *            True if Startup Type (Include) is selected.
-		 * @param startupExc
-		 *            True if Startup Type (Exclude) is selected.
-		 * @param serviceInc
-		 *            True if Service Status (Include) is selected.
-		 * @param serviceExc
-		 *            True if Service Status (Exclude) is selected.
-		 * @param typeInc
-		 *            Startup Type (Include) input from Up.time.
-		 * @param typeExc
-		 *            Startup Type (Exclude) input from Up.time.
-		 * @param statusInc
-		 *            Service Status (Include) input from Up.time.
-		 * @param statusExc
-		 *            Service Status (Exclude) input from Up.time.
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
 		 * @return True if executing wmic command is successful, false otherwise.
 		 */
 		private boolean execWmicCommand(HashMap<String, String[]> result, ArrayList<String> wmicCommand,
-				HashSet<String> regexes, boolean startupInc, boolean startupExc, boolean serviceInc,
-				boolean serviceExc, String typeInc, String typeExc, String statusInc, String statusExc) {
+				HashSet<String> regexes, WSCPluginParams wscParams) {
 			boolean gotResult = false;
 			try {
 				LOGGER.debug("Make a Process to execute wmic command.");
@@ -372,14 +361,19 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 					if (!line.trim().equals("") && columnNamesFound) {
 						// On Linux, WMIC_TOKENS re-appears multiple times, splitLineAndPutInHashMap() will handle the
 						// duplication.
-						gotResult = splitLineAndPutInHashMap(result, line, regexes, startupInc, startupExc, serviceInc,
-								serviceExc, typeInc, typeExc, statusInc, statusExc);
+						gotResult = splitLineAndPutInHashMap(result, line, regexes, wscParams);
 						if (!gotResult) {
 							// Splitting the given line was unsuccessful. Break out of while loop and destroy process.
 							break;
 						}
 					}
 				}
+
+				// If output does not contain wmic tokens, authentication failed.
+				if (!columnNamesFound) {
+					setStateAndMessage(MonitorState.UNKNOWN, "Authentication failed");
+				}
+
 				process.waitFor();
 				process.destroy();
 			} catch (IOException | InterruptedException e) {
@@ -399,27 +393,12 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		 *            Command to execute.
 		 * @param regexes
 		 *            A list of regexes.
-		 * @param startupInc
-		 *            True if Startup Type (Include) is selected.
-		 * @param startupExc
-		 *            True if Startup Type (Exclude) is selected.
-		 * @param serviceInc
-		 *            True if Service Status (Include) is selected.
-		 * @param serviceExc
-		 *            True if Service Status (Exclude) is selected.
-		 * @param typeInc
-		 *            Startup Type (Include) input from Up.time.
-		 * @param typeExc
-		 *            Startup Type (Exclude) input from Up.time.
-		 * @param statusInc
-		 *            Service Status (Include) input from Up.time.
-		 * @param statusExc
-		 *            Service Status (Exclude) input from Up.time.
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
 		 * @return True if successful, false otherwise.
 		 */
 		private boolean splitLineAndPutInHashMap(HashMap<String, String[]> result, String line,
-				HashSet<String> regexes, boolean startupInc, boolean startupExc, boolean serviceInc,
-				boolean serviceExc, String typeInc, String typeExc, String statusInc, String statusExc) {
+				HashSet<String> regexes, WSCPluginParams wscParams) {
 
 			// Special case : On Linux, output returned from WMIC client often contains unwanted lines such as
 			// "CLASS: Win32_Service" and "Caption,Name,StartMode,State" and "CLASS: Win32_TerminalService" in the list
@@ -470,22 +449,32 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 			}
 
 			boolean hasMatch = false;
+			boolean startupTypeIncluded = wscParams.isStartupTypeIncluded();
+			boolean startupTypeExcluded = wscParams.isStartupTypeExcluded();
+			String startupTypeInclude = wscParams.getStartupTypeInclude();
+			String startupTypeExclude = wscParams.getStartupTypeExclude();
+
 			for (String regex : regexes) {
 				// Filter the list of services with service name / regex. and filter again with startup type.
 				hasMatch = serviceDisplayName.matches(regex);
-				if (hasMatch && startupInc && startupType.contains(typeInc)) {
+				if (hasMatch && startupTypeIncluded && startupType.contains(startupTypeInclude)) {
 					// (Include) is selected, and the line contains selected startup type.
 					result.put(serviceDisplayName, new String[] { startupType, status });
-				} else if (hasMatch && startupExc && !startupType.contains(typeExc)) {
+				} else if (hasMatch && startupTypeExcluded && !startupType.contains(startupTypeExclude)) {
 					// (Exclude) is selected, and the line does not contain the selected Startup type.
 					result.put(serviceDisplayName, new String[] { startupType, status });
-				} else if (hasMatch && !startupInc && !startupExc) {
+				} else if (hasMatch && !startupTypeIncluded && !startupTypeExcluded) {
 					// If neither Startup Type (Include) / (Exclude) is selected, no need to filter.
 					result.put(serviceDisplayName, new String[] { startupType, status });
 				}
 			}
 
-			if (!serviceInc && !serviceExc) {
+			boolean serviceStatusIncluded = wscParams.isServiceStatusIncluded();
+			boolean serviceStatusExcluded = wscParams.isServiceStatusExcluded();
+			String serviceStatusInclude = wscParams.getServiceStatusInclude();
+			String serviceStatusExclude = wscParams.getServiceStatusExclude();
+
+			if (!serviceStatusIncluded && !serviceStatusExcluded) {
 				// If service status (Include) or (Exclude) is not selected, no more filtering is needed.
 				return true;
 			}
@@ -493,9 +482,9 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 			// Last filtering with service status(Include) or (Exclude).
 			boolean serviceAddedFromAbove = result.containsKey(serviceDisplayName);
 			String servStatusOfKey = serviceAddedFromAbove ? result.get(serviceDisplayName)[SERVICE_STATUS_INDEX] : "";
-			if (serviceInc && serviceAddedFromAbove && !servStatusOfKey.contains(statusInc)) {
+			if (serviceStatusIncluded && serviceAddedFromAbove && !servStatusOfKey.contains(serviceStatusInclude)) {
 				result.remove(serviceDisplayName);
-			} else if (serviceExc && serviceAddedFromAbove && servStatusOfKey.contains(statusExc)) {
+			} else if (serviceStatusExcluded && serviceAddedFromAbove && servStatusOfKey.contains(serviceStatusExclude)) {
 				result.remove(serviceDisplayName);
 			}
 
@@ -507,11 +496,14 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		 * 
 		 * @param regexes
 		 *            A list of regexes.
-		 * @param serviceDisplayName
-		 *            Service Display Name input from Up.time.
+		 * @param wscParams
+		 *            An object that holds all input params from Up.time.
 		 * @return True if the given regexes are valid and added to the HashSet, false otherwise.
 		 */
-		private boolean checkRegexAndAdd(HashSet<String> regexes, String serviceDisplayName) {
+		private boolean checkRegexAndAdd(HashSet<String> regexes, WSCPluginParams wscParams) {
+
+			String serviceDisplayName = wscParams.getServiceDisplayName();
+
 			if (serviceDisplayName.contains(COMMA_DELIMITER)) {
 				// If Service Display Name input contains comma(s), separate them.
 				String[] temp = serviceDisplayName.split(COMMA_DELIMITER);
