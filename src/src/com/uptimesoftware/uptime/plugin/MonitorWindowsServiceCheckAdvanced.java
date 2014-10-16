@@ -54,7 +54,7 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		private static final Logger LOGGER = LoggerFactory.getLogger(UptimeMonitorWindowsServiceCheckAdvanced.class);
 
 		private static final String HOSTNAME = "hostname";
-		private static final String USERNAME = "userName";
+		private static final String ADMIN_NAME = "adminName";
 		private static final String DOMAIN_NAME = "domainName";
 		private static final String PASSWORD = "password";
 		private static final String SERVICE_DISPLAY_NAME = "serviceDisplayName";
@@ -88,7 +88,7 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 		// [Input]
 		String hostName;
 		String domainName;
-		String userName;
+		String adminName;
 		String password;
 		String serviceDisplayName; // This String can be regex.
 		String startupTypeInclude;
@@ -109,7 +109,7 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 			// [Input]
 			hostName = params.getString(HOSTNAME);
 			domainName = params.getString(DOMAIN_NAME);
-			userName = params.getString(USERNAME);
+			adminName = params.getString(ADMIN_NAME);
 			password = params.getString(PASSWORD);
 			serviceDisplayName = params.getString(SERVICE_DISPLAY_NAME);
 			startupTypeInclude = params.getString(STARTUP_TYPE_INCLUDE);
@@ -117,7 +117,7 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 			serviceStatusInclude = params.getString(SERVICE_STATUS_INCLUDE);
 			serviceStatusExclude = params.getString(SERVICE_STATUS_EXCLUDE);
 
-			wscParams = new WSCPluginParams(hostName, domainName, userName, password, serviceDisplayName,
+			wscParams = new WSCPluginParams(hostName, domainName, adminName, password, serviceDisplayName,
 					startupTypeInclude, startupTypeExclude, serviceStatusInclude, serviceStatusExclude);
 
 			// If startup type is "Automatic", convert it to "Auto" because WMI only outputs "Auto".
