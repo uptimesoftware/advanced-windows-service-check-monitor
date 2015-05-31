@@ -2,7 +2,7 @@
   {
         "category": "Operating System Monitors",
         "supported_versions": [
-                "7.3"
+                "7.5"
         ],
         "name": "Advanced Windows Service Check",
         "git_file_target": "https://github.com/uptimesoftware/advanced-windows-service-check-monitor/raw/master/dist/advanced-windows-service-check.zip",
