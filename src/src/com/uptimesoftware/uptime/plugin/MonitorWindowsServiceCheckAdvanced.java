@@ -221,9 +221,6 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 				} else if (userName == null || userName.equals("")) {
 					setStateAndMessage(MonitorState.UNKNOWN, "Please enter Username.");
 					return false;
-				} else if (domainName == null || domainName.equals("")) {
-					setStateAndMessage(MonitorState.UNKNOWN, "Please enter Domain.");
-					return false;
 				}
 			} else if (wscParams.isItLocalhost() && (userName != null || password != null || domainName != null)) {
 				// localhost but admin name or/and password are entered. localhost doesn't need them for wmic.
@@ -250,7 +247,7 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 
 			if (SystemUtils.IS_OS_WINDOWS) {
 				LOGGER.debug("[Windows] Set a new admin name if domain is entered");
-				userName = domainName != null ? domainName + "\\" + userName : userName;
+				userName = domainName != null ? domainName + "\\" + userName : "\\" + userName;
 				// Windows WMIC : wmic /node:<hostname> /user:<username> /password:<password> Service GET
 				// Caption,Name,StartMode,State.
 				if (isItLocalhost) {
@@ -355,6 +352,8 @@ public class MonitorWindowsServiceCheckAdvanced extends Plugin {
 				String line = "";
 				while ((line = bufferedReader.readLine()) != null) {
 					if (!columnNamesFound) {
+						LOGGER.debug("test code2.");
+						LOGGER.debug(line);
 						columnNamesFound = line.contains(WMIC_TOKENS);
 						continue;
 					}
